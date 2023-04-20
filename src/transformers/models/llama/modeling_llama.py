@@ -232,7 +232,7 @@ class LlamaAttention(nn.Module):
                 attn_weights = None
 
                 attn_output = attn_output.view(attn_output.size(0), attn_output.size(
-                    1), self.attention.num_heads * self.attention.head_dim)
+                    1), self.num_heads * self.head_dim)
             else:
                 attn_output = F.scaled_dot_product_attention(query_states, key_states, value_states, attn_mask=None, dropout_p=0.0, is_causal=True)
                 attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, q_len, n_embd)
