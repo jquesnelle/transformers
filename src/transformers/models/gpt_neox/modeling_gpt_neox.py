@@ -19,7 +19,7 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.utils.checkpoint
 from torch import nn
-from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss, functional as F
 
 from ...activations import ACT2FN
 from ...file_utils import (
@@ -97,6 +97,11 @@ class GPTNeoXAttention(nn.Module):
         self.norm_factor = torch.sqrt(torch.tensor(self.head_size, dtype=torch.float32)).to(torch.get_default_dtype())
         self.query_key_value = nn.Linear(config.hidden_size, 3 * config.hidden_size)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        try:
+            from flash_attn.modules.mha import FlashSelfAttention
+            self.flash_self_attention = FlashSelfAttention(causal=True)
+        except ImportError:
+            self.flash_self_attention = None
 
     def forward(
         self,
@@ -108,6 +113,7 @@ class GPTNeoXAttention(nn.Module):
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
     ):
+        bsz, q_len, n_embd = hidden_states.size()
         has_layer_past = layer_past is not None
 
         # Compute QKV
@@ -148,11 +154,24 @@ class GPTNeoXAttention(nn.Module):
             value = torch.cat((past_value, value), dim=-2)
         present = (key, value) if use_cache else None
 
-        # Compute attention
-        attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
+        if not use_cache and not output_attentions:
+            if self.flash_self_attention:
+                qkv = torch.concat([query.unsqueeze(2), key.unsqueeze(
+                    2), value.unsqueeze(2)], dim=2).permute(0, 3, 2, 1, 4).half()
+                attn_output = self.flash_self_attention(qkv)
+                attn_output = attn_output.view(attn_output.size(0), attn_output.size(
+                    1), self.num_attention_heads * self.head_size)
+                attn_weights = None
+            else:
+                attn_output = F.scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=True)
+                attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, q_len, n_embd)
+                attn_weights = None
+        else:
+            # Compute attention
+            attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
 
-        # Reshape outputs
-        attn_output = self._merge_heads(attn_output, self.num_attention_heads, self.head_size)
+            # Reshape outputs
+            attn_output = self._merge_heads(attn_output, self.num_attention_heads, self.head_size)
         attn_output = self.dense(attn_output)
 
         outputs = (attn_output, present)
