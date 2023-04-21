@@ -33,6 +33,11 @@ from ...modeling_utils import PreTrainedModel
 from ...utils import logging
 from .configuration_gpt_neox import GPTNeoXConfig
 
+try:
+    from flash_attn.modules.mha import FlashSelfAttention
+except ImportError:
+    pass
+
 
 logger = logging.get_logger(__name__)
 

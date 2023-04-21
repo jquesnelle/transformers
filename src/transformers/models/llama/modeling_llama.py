@@ -32,6 +32,11 @@ from ...modeling_utils import PreTrainedModel
 from ...utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging, replace_return_docstrings
 from .configuration_llama import LlamaConfig
 
+try:
+    from flash_attn.modules.mha import FlashSelfAttention
+except ImportError:
+    pass
+
 
 logger = logging.get_logger(__name__)
 
