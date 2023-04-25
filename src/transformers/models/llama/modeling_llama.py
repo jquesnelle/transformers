@@ -185,9 +185,13 @@ class LlamaAttention(nn.Module):
         self.rotary_emb = LlamaRotaryEmbedding(self.head_dim, max_position_embeddings=self.max_position_embeddings)
         try:
             from flash_attn.modules.mha import FlashSelfAttention
+            from flash_attn.layers.rotary import RotaryEmbedding
             self.flash_self_attention = FlashSelfAttention(causal=True)
+            self.rotary_emb = RotaryEmbedding(self.head_dim)
+            self.rotary_emb._update_cos_sin_cache(torch.tensor([[],[]]), self.max_position_embeddings)
         except ImportError:
             self.flash_self_attention = None
+
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
@@ -210,8 +214,18 @@ class LlamaAttention(nn.Module):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+
+        if self.flash_self_attention is not None:
+            qkv = torch.concat([query_states.unsqueeze(2), key_states.unsqueeze(
+                    2), value_states.unsqueeze(2)], dim=2).permute(0, 3, 2, 1, 4).to(query_states.dtype)
+            self.rotary_emb(qkv, seqlen_offset=past_key_value[0].shape[-2] if past_key_value is not None else 0)
+            qkv = qkv.permute(0, 3, 2, 1, 4)
+            query_states = qkv[:, :, 0]
+            key_states = qkv[:, :, 1]
+            value_states = qkv[:, :, 2]
+        else:
+            cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
         # [bsz, nh, t, hd]
 
         if past_key_value is not None:
