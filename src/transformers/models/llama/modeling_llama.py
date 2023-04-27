@@ -182,15 +182,23 @@ class LlamaAttention(nn.Module):
         self.k_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-        self.rotary_emb = LlamaRotaryEmbedding(self.head_dim, max_position_embeddings=self.max_position_embeddings)
+
+        self.rotary_emb = None
+        self.use_xpos = getattr(config, "use_xpos", False)
         try:
             from flash_attn.modules.mha import FlashSelfAttention
             from flash_attn.layers.rotary import RotaryEmbedding
             self.flash_self_attention = FlashSelfAttention(causal=True)
-            self.rotary_emb = RotaryEmbedding(self.head_dim)
-            self.rotary_emb._update_cos_sin_cache(torch.tensor([[],[]]), self.max_position_embeddings)
+            if self.use_xpos:
+                self.rotary_emb = RotaryEmbedding(self.head_dim)
+                self.rotary_emb._update_cos_sin_cache(torch.tensor([[],[]]), self.max_position_embeddings)
         except ImportError:
             self.flash_self_attention = None
+            if self.use_xpos:
+                logger.warning_once("use_xpos is set but flash-attn or rotary_emb not installed")
+
+        if self.rotary_emb is None:
+            self.rotary_emb = LlamaRotaryEmbedding(self.head_dim, max_position_embeddings=self.max_position_embeddings)
 
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
@@ -215,7 +223,7 @@ class LlamaAttention(nn.Module):
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
 
-        if self.flash_self_attention is not None:
+        if self.use_xpos:
             qkv = torch.concat([query_states.unsqueeze(2), key_states.unsqueeze(
                     2), value_states.unsqueeze(2)], dim=2).permute(0, 3, 2, 1, 4).to(query_states.dtype)
             self.rotary_emb(qkv, seqlen_offset=past_key_value[0].shape[-2] if past_key_value is not None else 0)
